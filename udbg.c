@@ -47,18 +47,18 @@ static struct
 //  exit on critical (and unrecoverable)
 //  error with message to STDERR
 #define panic_std(msg_)                             \
-{                                                   \
+({                                                  \
     dprintf(STDERR_FILENO, err_panic, __LINE__,     \
             msg_, strerror(errno));                 \
     exit(EXIT_FAILURE);                             \
-}                                                   \
+})                                                  \
 
 //  exit on critical (and unrecoverable)
 //  error with some message to state fd
 //  if descriptor output fails, at least try
 //  to print the same message to STDERR
 #define panic_fd(msg_)                              \
-{                                                   \
+({                                                  \
     if (dprintf(state.fd, err_panic, __LINE__,      \
             msg_, strerror(errno)) <= 0)            \
     {                                               \
@@ -67,7 +67,7 @@ static struct
     }                                               \
                                                     \
     exit(EXIT_FAILURE);                             \
-}
+})                                                  \
 
 /*
  *  stub
@@ -97,8 +97,8 @@ static struct
 ({                                                          \
     const ssize_t amt_ = write(state.fd,                    \
                                state.output_buf,            \
-                               (size_t) counter_);          \
-    if (amt_ != (ssize_t) counter_)                         \
+                               (size_t) (counter_));        \
+    if (amt_ != (ssize_t) (counter_))                       \
     {                                                       \
         panic_fd("write()");                                \
     }                                                       \
@@ -284,7 +284,7 @@ void __udbg_init(const char *path, const int opt, const uint64_t channels)
     }
 
     // set signals and alternate stack
-    if ((opt & UDBG_NOSIG) == 0)
+    if (!is_set(opt, UDBG_NOSIG))
     {
 
         const stack_t stack =
@@ -325,7 +325,7 @@ void __udbg_init(const char *path, const int opt, const uint64_t channels)
         // and if the suffix attr is set,
         // get current time and form a full path
         const char *path_ptr = path;
-        if (opt & UDBG_SUFFIX)
+        if (is_set(opt, UDBG_SUFFIX))
         {
             // regular snprintf()
             int offset = snprintf(state.output_buf, UDBG_BUF, "%s_", path);

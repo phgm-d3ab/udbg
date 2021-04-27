@@ -11,8 +11,8 @@
 #ifndef UDBG
 
 #define __udbg_init_impl(path_, opt_, channels_)
-#define __udbg_log_impl(lvl_, fmt_, ...)
-#define __udbg_hexdump_impl(chl_, label_, ptr_, len_)
+#define __udbg_log_impl(ch_, fmt_, ...)
+#define __udbg_hexdump_impl(ch_, label_, ptr_, len_)
 #define __udbg_bindump_impl(ch_, label_, ptr_, len_)
 #define __udbg_throw_impl()
 #define __udbg_assert_impl(expr_)
