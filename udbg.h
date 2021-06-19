@@ -21,6 +21,10 @@
 // do not set udbg sighandlers
 #define UDBG_NOSIG          0x8
 
+// write out a core dump (to a default location)
+// during crash, exception, assert
+#define UDBG_CORE           0x10
+
 
 ///////////////////////////
 ///     routines        ///

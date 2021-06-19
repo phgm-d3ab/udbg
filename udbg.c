@@ -13,7 +13,7 @@
 #include <fcntl.h>
 
 // convenience
-#define is_set(mask, attr) ({ mask & attr; })
+#define is_set(mask, attr) ({ ((mask) & (attr)); })
 
 #define UDBG_BUF_LEN        8192                // real
 #define UDBG_BUF            (UDBG_BUF_LEN + 1)  // used
@@ -105,6 +105,26 @@ static struct
                                                             \
     memset(state.output_buf, 0, counter_);                  \
 })
+
+
+// remap SIGABRT to its default action and abort() if needed
+static void exit_stub()
+{
+    if (is_set(state.options, UDBG_CORE))
+    {
+        struct sigaction def_action = {0};
+        def_action.sa_sigaction = (void *) SIG_DFL; // !
+
+        if (sigaction(SIGABRT, &def_action, NULL))
+        {
+            exit(EXIT_FAILURE);
+        }
+
+        abort();
+    }
+
+    exit(EXIT_FAILURE);
+}
 
 
 /*
@@ -264,7 +284,7 @@ static void sig_handler(const int sig,
     counter = append_callstack(depth, counter);
 
     write_stub(counter);
-    exit(EXIT_FAILURE);
+    exit_stub();
 }
 
 
@@ -276,7 +296,7 @@ void __udbg_init(const char *path, const int opt, const uint64_t channels)
     state.fd = STDERR_FILENO;
     state.options = opt;
     // enable everything by default
-    state.channels_mask = channels ? channels : 0xffffffffffffffff;
+    state.channels_mask = channels ? channels : ((uint64_t) (-1));
 
     if (pthread_mutex_init(&state.lock, NULL))
     {
@@ -405,7 +425,7 @@ void __udbg_throwfmt(const char *fmt, ...)
     counter = append_callstack(depth, counter);
 
     write_stub(counter);
-    exit(EXIT_FAILURE);
+    exit_stub();
 }
 
 
