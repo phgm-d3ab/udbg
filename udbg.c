@@ -1,3 +1,6 @@
+// strerrorname_np(), sigabbrev_np()
+#define _GNU_SOURCE
+
 #include "udbg.h"
 
 #include <stdio.h>
@@ -36,6 +39,9 @@ static struct
     // extra bytes reserved for overflow detection
     char output_buf[UDBG_BUF + UDBG_BUF_RESERVED];
 
+    // buffer reserved for sig_handler()
+    char backtrace_buf[UDBG_BUF + UDBG_BUF_RESERVED];
+
     uint8_t alt_stack[SIGSTKSZ];
     void *trace[UDBG_CALLSTACK];
 
@@ -49,7 +55,7 @@ static struct
 #define panic_std(msg_)                             \
 ({                                                  \
     dprintf(STDERR_FILENO, err_panic, __LINE__,     \
-            msg_, strerror(errno));                 \
+            msg_, strerrorname_np(errno));          \
     exit(EXIT_FAILURE);                             \
 })                                                  \
 
@@ -60,10 +66,10 @@ static struct
 #define panic_fd(msg_)                              \
 ({                                                  \
     if (dprintf(state.fd, err_panic, __LINE__,      \
-            msg_, strerror(errno)) <= 0)            \
+            msg_, strerrorname_np(errno)) <= 0)     \
     {                                               \
         dprintf(STDERR_FILENO, err_panic, __LINE__, \
-            msg_, strerror(errno));                 \
+            msg_, strerrorname_np(errno));          \
     }                                               \
                                                     \
     exit(EXIT_FAILURE);                             \
@@ -74,9 +80,9 @@ static struct
  */
 
 //  error & overflow checked snprintf()
-#define snprintf_stub(offset_, ...)                         \
+#define snprintf_stub(buf_, offset_, ...)                   \
 ({                                                          \
-    const int amt_ = snprintf(state.output_buf + offset_,   \
+    const int amt_ = snprintf((buf_ + offset_),             \
                              UDBG_BUF - offset_,            \
                              ##__VA_ARGS__);                \
     if (amt_ < 0)                                           \
@@ -117,13 +123,64 @@ static void exit_stub()
 
         if (sigaction(SIGABRT, &def_action, NULL))
         {
-            exit(EXIT_FAILURE);
+            _exit(EXIT_FAILURE);
         }
 
         abort();
     }
 
-    exit(EXIT_FAILURE);
+    _exit(EXIT_FAILURE);
+}
+
+
+/*
+ *  try locking the state
+ *  wait 5 seconds then panic
+ */
+static void mutex_lock()
+{
+    // save time on the stack before modifying state
+    struct timespec delay = {0};
+
+    if (clock_gettime(CLOCK_REALTIME, &delay))
+    {
+        // we cant access shared data yet
+        // so at least try to output a message
+        // to STDERR before terminating
+        panic_std("clock_gettime()");
+    }
+
+    struct timespec now = delay;
+    delay.tv_sec += 5;
+
+    switch (pthread_mutex_timedlock(&state.lock, &delay))
+    {
+        case 0: // success
+        {
+            break;
+        }
+
+        case ETIMEDOUT:
+        {
+            panic_std("locking timed out");
+        }
+
+        default:
+        {
+            panic_std("pthread_mutex_timedlock()");
+        }
+    }
+
+    state.time = now;
+}
+
+static void mutex_unlock()
+{
+    // no errors expected here
+    if (pthread_mutex_unlock(&state.lock))
+    {
+        panic_fd("pthread_mutex_unlock()");
+    }
 }
 
 
@@ -203,7 +260,7 @@ static int append_callstack(const int depth, int counter)
             }
         }
 
-        counter += snprintf_stub(counter,
+        counter += snprintf_stub(state.backtrace_buf, counter,
                                  "[%i] %.*s()\n",
                                  depth - i, name_len, symbols[i] + name);
     }
@@ -213,61 +270,9 @@ static int append_callstack(const int depth, int counter)
 
 
 /*
- *  try locking the state
- *  wait 5 seconds then panic
- */
-static void mutex_lock()
-{
-    // save time on the stack before modifying state
-    struct timespec delay = {0};
-
-    if (clock_gettime(CLOCK_REALTIME, &delay))
-    {
-        // we cant access shared data yet
-        // so at least try to output a message
-        // to STDERR before terminating
-        panic_std("clock_gettime()");
-    }
-
-    struct timespec now = delay;
-    delay.tv_sec += 5;
-
-    switch (pthread_mutex_timedlock(&state.lock, &delay))
-    {
-        case 0: // success
-        {
-            break;
-        }
-
-        case ETIMEDOUT:
-        {
-            panic_std("locking timed out");
-        }
-
-        default:
-        {
-            panic_std("pthread_mutex_timedlock()");
-        }
-    }
-
-    state.time = now;
-}
-
-static void mutex_unlock()
-{
-    // no errors expected here
-    if (pthread_mutex_unlock(&state.lock))
-    {
-        panic_fd("pthread_mutex_unlock()");
-    }
-}
-
-/*
  *
  */
-static void sig_handler(const int sig,
-                        siginfo_t *siginfo,
-                        void *ctx)
+static void sig_handler(const int sig, siginfo_t *siginfo, void *ctx)
 {
     // this is not used, so suppress
     // compilation warnings
@@ -276,14 +281,42 @@ static void sig_handler(const int sig,
     // https://man7.org/linux/man-pages/man3/backtrace.3.html
     const int depth = backtrace(state.trace, UDBG_CALLSTACK);
 
-    int counter = append_timestamp();
-    counter += snprintf_stub(counter, "[UDBG::sig_handler] %s; errno %s\n\n",
-                             strsignal(sig),
-                             strerror(siginfo->si_errno));
+    int counter = 0;
+    if (is_set(state.options, UDBG_TIME))
+    {
+        struct timespec time = {0}; // access state.time not allowed here
+        if (clock_gettime(CLOCK_REALTIME, &time))
+        {
+            panic_fd("clock_gettime()");
+        }
+
+        const struct tm *ts = localtime(&time.tv_sec);
+        if (ts == NULL)
+        {
+            panic_fd("localtime()");
+        }
+
+        const size_t amt = strftime(state.backtrace_buf, 12, "[%X]", ts);
+        if (amt != 10)
+        {
+            panic_fd("strftime()");
+        }
+
+        counter += (int) amt;
+    }
+
+    counter += snprintf_stub(state.backtrace_buf, counter, "[UDBG::sig_handler] %s; %s\n\n",
+                             sigabbrev_np(sig), strerrorname_np(siginfo->si_errno));
 
     counter = append_callstack(depth, counter);
 
-    write_stub(counter);
+    // using different buffer so no write_stub()
+    const ssize_t amt = write(state.fd, state.backtrace_buf, counter);
+    if (amt < 0)
+    {
+        panic_fd("write()");
+    }
+
     exit_stub();
 }
 
@@ -498,7 +531,7 @@ void __udbg_hexdump(const uint64_t channel, const char *prefix, const void *ptr,
     int counter = append_timestamp();
 
     // initial msg
-    counter += snprintf_stub(counter, "%s\n", prefix);
+    counter += snprintf_stub(state.output_buf, counter, "%s\n", prefix);
 
     //
     for (int i = 0; i < len; i += 16)
@@ -523,7 +556,7 @@ void __udbg_hexdump(const uint64_t channel, const char *prefix, const void *ptr,
             row += 1;
         }
 
-        counter += snprintf_stub(counter, "%8d  %-24s %-24s |%-16s|\n",
+        counter += snprintf_stub(state.output_buf, counter, "%8d  %-24s %-24s |%-16s|\n",
                                  i, left, right, ascii);
     }
 
@@ -545,12 +578,12 @@ void __udbg_bindump(const uint64_t channel, const char *prefix, const void *ptr,
     int counter = append_timestamp();
 
     // initial msg
-    counter += snprintf_stub(counter, "%s\n", prefix);
+    counter += snprintf_stub(state.output_buf, counter, "%s\n", prefix);
 
     // cols
     for (int i = 0; i < len; i += 8)
     {
-        counter += snprintf_stub(counter, "%8d   ", i);
+        counter += snprintf_stub(state.output_buf, counter, "%8d   ", i);
 
         // rows
         for (int j = 0; j < 8 && j + i < len; j++)
