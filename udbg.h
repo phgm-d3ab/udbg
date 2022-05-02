@@ -39,7 +39,7 @@
 #define udbg_init(path_, opt_, channels_)   __udbg_init_impl(path_, opt_, channels_)
 
 // formatted output to some channel
-// [TIME][CHANNEL::function():line] <message>
+// [TIME][CHANNEL::function(line)] <message>
 #define udbg_log(channel_, fmt_, ...) \
                     __udbg_log_impl(channel_, __udbg_prefix(#channel_) fmt_, ##__VA_ARGS__)
 
