@@ -83,11 +83,11 @@ static udbg_state state = {0};
 #define __panic_global(msg_) __panic_base(-1, msg_)
 #define __panic_exp(fd_, msg_) __panic_base(fd_, msg_)
 
-void __udbg_panic(const int fd,
-                  const char *action,
-                  const char *f,
-                  const int line,
-                  const int err)
+__attribute__((noreturn)) void __udbg_panic(const int fd,
+                                            const char *action,
+                                            const char *f,
+                                            const int line,
+                                            const int err)
 {
     if (fd == -1)
     {
@@ -103,12 +103,12 @@ void __udbg_panic(const int fd,
             __udbg_panic(STDERR_FILENO, action, f, line, err_dprintf);
         }
 
-        exit(EXIT_FAILURE);
+        _exit(EXIT_FAILURE);
     }
 
     dprintf(STDERR_FILENO, "[udbg::stderr(%s)] panicked at %s %s():%u %s\n",
             strerrorname_np(err), action, f, line, strerrorname_np(errno));
-    exit(EXIT_FAILURE);
+    _exit(EXIT_FAILURE);
 }
 
 
@@ -167,26 +167,29 @@ static void buf_flush(const int fd, udbg_buf *ptr)
 }
 
 
-static void buf_timestamp(const int attr, const time_t time, udbg_buf *ptr)
+static void buf_timestamp(const int attr,
+                          const struct timespec *ts,
+                          udbg_buf *ptr)
 {
     if (!is_set(attr, UDBG_TIME))
     {
         return;
     }
 
-    const struct tm *ts = localtime(&time);
-    if (ts == NULL)
+    char buf[16] = {0};
+    const struct tm *local = localtime(&ts->tv_sec);
+    if (local == NULL)
     {
         panic("localtime()");
     }
 
-    const size_t amt = strftime(ptr->buf + ptr->iterator, 12, "[%X]", ts);
-    if (amt != 10)
+    const size_t amt = strftime(buf, 16, "%H:%M:%S", local);
+    if (amt != 8)
     {
         panic("strftime()");
     }
 
-    ptr->iterator += (int) amt;
+    buf_snprintf(ptr, "[%s.%06ld]", buf, (ts->tv_nsec / 1000l));
 }
 
 /*
@@ -301,7 +304,7 @@ static void exit_stub()
  *  try locking the state
  *  wait 5 seconds then panic
  */
-static time_t state_lock()
+static struct timespec state_lock()
 {
     struct timespec delay = {0};
     if (clock_gettime(CLOCK_REALTIME, &delay))
@@ -334,7 +337,7 @@ static time_t state_lock()
         }
     }
 
-    return now.tv_sec;
+    return now;
 }
 
 
@@ -369,7 +372,7 @@ void __udbg_sig_handler(const int sig, siginfo_t *siginfo, void *ctx)
             panic("clock_gettime()");
         }
 
-        buf_timestamp(0xff, timestamp.tv_sec, &state.buf_backtrace);
+        buf_timestamp(0xff, &timestamp, &state.buf_backtrace);
     }
 
     buf_snprintf(&state.buf_backtrace, "[udbg::%s] %s\n\n",
@@ -531,9 +534,9 @@ void __udbg_throwfmt(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    const time_t timestamp = state_lock(); // no return => no unlock
+    const struct timespec timestamp = state_lock(); // no return => no unlock
 
-    buf_timestamp(state.options, timestamp, &state.buf_output);
+    buf_timestamp(state.options, &timestamp, &state.buf_output);
     buf_vaprintf(&state.buf_output, fmt, args);
 
     va_end(args);
@@ -555,9 +558,9 @@ void __udbg_log(const uint64_t channel, const char *fmt, ...)
 
     va_list args;
     va_start(args, fmt);
-    const time_t timestamp = state_lock();
+    const struct timespec timestamp = state_lock();
 
-    buf_timestamp(state.options, timestamp, &state.buf_output);
+    buf_timestamp(state.options, &timestamp, &state.buf_output);
     buf_vaprintf(&state.buf_output, fmt, args);
 
     va_end(args);
@@ -600,8 +603,8 @@ void __udbg_hexdump(const uint64_t channel, const char *prefix,
         return;
     }
 
-    const time_t timestamp = state_lock();
-    buf_timestamp(state.options, timestamp, &state.buf_output);
+    const struct timespec timestamp = state_lock();
+    buf_timestamp(state.options, &timestamp, &state.buf_output);
 
     const uint8_t *data = (uint8_t *) ptr;
     const uint8_t *data_end = data + len;
@@ -648,10 +651,10 @@ void __udbg_bindump(const uint64_t channel, const char *prefix,
         return;
     }
 
-    const time_t timestamp = state_lock();
+    const struct timespec timestamp = state_lock();
     const uint8_t *data = (uint8_t *) ptr;
 
-    buf_timestamp(state.options, timestamp, &state.buf_output);
+    buf_timestamp(state.options, &timestamp, &state.buf_output);
     buf_snprintf(&state.buf_output, "%s\n", prefix);
 
     for (int i = 0; i < len; i += 8)
